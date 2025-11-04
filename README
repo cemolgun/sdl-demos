@@ -1,2 +1,7 @@
 Trying to learn SDL3
 
+To build and run:
+    cd <demo_name>
+    cmake -S . -B build
+    cmake --build build
+    ./build/bin/<demo_name>
