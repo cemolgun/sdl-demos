@@ -3,9 +3,9 @@
 #include <stdio.h>
 
 typedef struct {
-    float pos_x;
-    float pos_y;
-    float vel_y;
+    float pos[2];
+    float vel[2];
+    float acc[2];
     float height;
     float width;
     bool  gravity;
@@ -27,14 +27,15 @@ int main(int argc, char* argv[])
 
 
     Object obj = {
-        .pos_x = canvas_w*0.5,
-        .pos_y = canvas_h*0.5,
-        .vel_y = 0,
+        .pos = { canvas_w*0.5, canvas_h*0.5 },
+        .vel = { 0, 0 },
+        .acc = { 0, 0 },
         .height = canvas_h*0.04,
         .width = canvas_h*0.04,
         .gravity = false
     };
 
+    const bool* keys = SDL_GetKeyboardState(NULL);
     while (run)
     {
         // Handle events
@@ -42,30 +43,36 @@ int main(int argc, char* argv[])
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT)
                 run = false;
-
-            if (event.type == SDL_EVENT_KEY_DOWN) {
-
-                switch (event.key.key) {
-                case SDLK_UP:
-                    if (!obj.gravity)
-                        obj.pos_y = (obj.pos_y + obj.height) < canvas_h ? obj.pos_y + obj.height : canvas_h;
-                    break;
-                case SDLK_DOWN:
-                    obj.pos_y = (obj.pos_y - obj.height) > 0 ? obj.pos_y - obj.height : 0;
-                    break;
-                case SDLK_RIGHT:
-                    obj.pos_x = (obj.pos_x + obj.width) < canvas_w ? obj.pos_x + obj.width : canvas_w;
-                    break;
-                case SDLK_LEFT:
-                    obj.pos_x = (obj.pos_x - obj.width) > 0 ? obj.pos_x - obj.width : 0;
-                    break;
-                case SDLK_RETURN:
-                    obj.gravity = !obj.gravity;
-                    break;
-                }
-            }
         }
 
+        /* Get key states */
+        static bool enter_old = false;
+        bool enter = keys[SDL_SCANCODE_RETURN];
+        bool up    = keys[SDL_SCANCODE_UP];
+        bool down  = keys[SDL_SCANCODE_DOWN];
+        bool left  = keys[SDL_SCANCODE_LEFT];
+        bool right = keys[SDL_SCANCODE_RIGHT];
+
+        if (enter > enter_old)
+            obj.gravity = !obj.gravity;
+        enter_old = enter;
+
+        float vel_from_key[2];
+        if (up && !down && !obj.gravity)
+            vel_from_key[1] = 500;
+        else if (!up && down && !obj.gravity)
+            vel_from_key[1] = -500;
+        else
+            vel_from_key[1] = 0;
+
+        if (left && !right)
+            vel_from_key[0] = -500;
+        else if (!left && right)
+            vel_from_key[0] = 500;
+        else
+            vel_from_key[0] = 0;
+
+        /* Calc time */
         static SDL_Time t0 = 0;
         if (t0 == 0)
             SDL_GetCurrentTime(&t0);
@@ -76,24 +83,45 @@ int main(int argc, char* argv[])
         float delta_t = (t1 - t0) * 1e-9f; // ns -> s
         t0 = t1;
 
-        obj.pos_y = (obj.pos_y + obj.vel_y*delta_t) > 0 ? (obj.pos_y + obj.vel_y*delta_t) : 0;
-
-        if (obj.gravity && obj.pos_y != 0)
-            obj.vel_y += -9.81*200 * delta_t;
+        if (obj.gravity)
+            obj.acc[1] = -3000;
         else
-            obj.vel_y = 0;
+            obj.acc[1] = 0;
 
+        static bool gravity_old = false;
+        if (gravity_old && !obj.gravity)
+            obj.vel[1] = 0;
+        gravity_old = obj.gravity;
+
+        /* Update obj speed */
+        obj.vel[0] += obj.acc[0] * delta_t;
+        obj.vel[1] += obj.acc[1] * delta_t;
+
+        /* Update obj position */
+        float next_pos_x = obj.pos[0] + (obj.vel[0] + vel_from_key[0])*delta_t;
+        float next_pos_y = obj.pos[1] + (obj.vel[1] + vel_from_key[1])*delta_t;
+
+        if (next_pos_y < 0) {
+            obj.vel[1] = 0;
+            obj.acc[1] = 0;
+            obj.pos[1] = 0;
+        } else if (next_pos_y > canvas_h) {
+            obj.pos[1] = canvas_h;
+        } else {
+            obj.pos[1] = next_pos_y;
+        }
+
+        obj.pos[0] = ((next_pos_x >= 0) && (next_pos_x <= canvas_w)) ? next_pos_x : obj.pos[0];
+        
+        /* Draw scene */
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
         SDL_RenderClear(renderer);
-
-        int win_w, win_h;
-        SDL_GetWindowSize(win, &win_w, &win_h);
 
         SDL_FRect obj_rect = {
             .h = obj.height,
             .w = obj.width,
-            .x = obj.pos_x - obj.width*0.5,
-            .y = canvas_h - (obj.pos_y + obj.height*0.5)
+            .x = obj.pos[0] - obj.width*0.5,
+            .y = canvas_h - (obj.pos[1] + obj.height*0.5)
         };
 
         if (obj.gravity)
@@ -101,14 +129,28 @@ int main(int argc, char* argv[])
         else
             SDL_SetRenderDrawColor(renderer, 0, 0xAA, 0x88, 0xFF);
         SDL_RenderFillRect(renderer, &obj_rect);
-            
+
+        SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, canvas_w, canvas_h);
+        SDL_SetRenderTarget(renderer, tex);
         SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
-        SDL_RenderDebugText(renderer, 0, 0, "Press enter to toggle gravity");
+        SDL_SetRenderScale(renderer, 3, 3);
+        SDL_RenderDebugTextFormat(renderer, 5, SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE*0*1.5+5, "Gravity:%s", (obj.gravity?"ON":"OFF") );
+        SDL_RenderDebugTextFormat(renderer, 5, SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE*1*1.5+5, "X:%d", (int)obj.pos[0]);
+        SDL_RenderDebugTextFormat(renderer, 5, SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE*2*1.5+5, "Y:%d", (int)obj.pos[1]);
+        const char* help[] = {"Press enter to toggle gravity", "Use arrow keys to move"};
+        SDL_RenderDebugText(renderer, (canvas_w/3)-(SDL_strlen(help[0])*SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE)-5, SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE*0*1.5+5, help[0]);
+        SDL_RenderDebugText(renderer, (canvas_w/3)-(SDL_strlen(help[1])*SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE)-5, SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE*1*1.5+5, help[1]);
+
+        SDL_SetRenderScale(renderer, 1, 1);
+        SDL_SetRenderTarget(renderer, NULL);
+        SDL_RenderTexture(renderer, tex, NULL, NULL);
+        SDL_DestroyTexture(tex);
 
         SDL_RenderPresent(renderer);
         SDL_Delay(16);
     }
     
+    /* Cleanup */
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(win);
     SDL_Quit();
